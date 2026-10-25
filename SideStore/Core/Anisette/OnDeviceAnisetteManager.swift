@@ -12,6 +12,7 @@ import SideSign
 
 public actor OnDeviceAnisetteManager {
     public static let shared = OnDeviceAnisetteManager()
+    public static let adiBlobSource = "on-device"
 
     private let provider: AnisetteDataManager
 
@@ -49,7 +50,9 @@ public actor OnDeviceAnisetteManager {
         let identifierUUID = await AnisetteConfigManager.shared.resolveDeviceIdentifier()
 
         var existingAdiPbData: Data? = nil
-        if let base64Blob = AnisetteConfigManager.shared.anisetteAdiBlob,
+        let blobSource = UserDefaults.standard.anisetteAdiBlobSource
+        if blobSource == nil || blobSource == Self.adiBlobSource,
+           let base64Blob = AnisetteConfigManager.shared.anisetteAdiBlob,
            let decoded = Data(base64Encoded: base64Blob, options: .ignoreUnknownCharacters),
            !decoded.isEmpty {
             existingAdiPbData = decoded
@@ -75,6 +78,7 @@ public actor OnDeviceAnisetteManager {
 
         if let freshBlob = newAdiPb {
             AnisetteConfigManager.shared.anisetteAdiBlob = freshBlob.base64EncodedString()
+            UserDefaults.standard.anisetteAdiBlobSource = Self.adiBlobSource
             debugLog("[OnDeviceAnisetteManager] [Fetch] Fresh local provisioning completed -> saved new adi.pb (\(freshBlob.count) bytes) to Keychain")
         }
 

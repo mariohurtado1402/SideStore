@@ -13,12 +13,21 @@ public struct AnisetteServerItem: Codable, Identifiable, Hashable {
     public var name: String
     public var address: String
     public var isHidden: Bool
+    public var kind: Int?
 
-    public init(name: String, address: String, isHidden: Bool = false) {
+    public init(name: String, address: String, isHidden: Bool = false, kind: Int? = nil) {
         self.name = name
         self.address = address
         self.isHidden = isHidden
+        self.kind = kind
     }
+
+    public static let macKind = 2
+}
+
+public struct AnisetteServerClientInfo: Sendable, Hashable {
+    public let clientInfo: String
+    public let userAgent: String
 }
 
 public actor AnisetteServersManager {
@@ -27,6 +36,7 @@ public actor AnisetteServersManager {
 
     private var inMemoryServersCache: [AnisetteServerItem]?
     private var isSyncing: Bool = false
+    private var clientInfoCache: [String: AnisetteServerClientInfo] = [:]
 
     private let userFacingFileURL: URL = {
         let docs = FileManager.default.documentsDirectory
@@ -155,21 +165,21 @@ public actor AnisetteServersManager {
         } else if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
             for dict in json {
                 if let name = dict["name"] as? String, let address = dict["address"] as? String {
-                    parsedServers.append(Server(name: name, address: address))
+                    parsedServers.append(Server(name: name, address: address, kind: dict["kind"] as? Int))
                 }
             }
         } else if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let list = json["servers"] as? [[String: Any]] {
             for dict in list {
                 if let name = dict["name"] as? String, let address = dict["address"] as? String {
-                    parsedServers.append(Server(name: name, address: address))
+                    parsedServers.append(Server(name: name, address: address, kind: dict["kind"] as? Int))
                 }
             }
         } else {
             throw NSError(domain: "AnisetteServersManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON format in imported file."])
         }
 
-        let importedItems = parsedServers.map { AnisetteServerItem(name: $0.name, address: $0.address, isHidden: false) }
+        let importedItems = parsedServers.map { AnisetteServerItem(name: $0.name, address: $0.address, isHidden: false, kind: $0.kind) }
         saveLocalServers(importedItems)
         // Save raw imported file backup for Reset feature
         try? data.write(to: rawImportedBackupFileURL, options: .atomic)
@@ -193,23 +203,23 @@ public actor AnisetteServersManager {
             } else if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
                 for dict in json {
                     if let name = dict["name"] as? String, let address = dict["address"] as? String {
-                        parsedServers.append(Server(name: name, address: address))
+                        parsedServers.append(Server(name: name, address: address, kind: dict["kind"] as? Int))
                     }
                 }
             } else if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let list = json["servers"] as? [[String: Any]] {
                 for dict in list {
                     if let name = dict["name"] as? String, let address = dict["address"] as? String {
-                        parsedServers.append(Server(name: name, address: address))
+                        parsedServers.append(Server(name: name, address: address, kind: dict["kind"] as? Int))
                     }
                 }
             }
-            itemsToExport = parsedServers.map { AnisetteServerItem(name: $0.name, address: $0.address, isHidden: false) }
+            itemsToExport = parsedServers.map { AnisetteServerItem(name: $0.name, address: $0.address, isHidden: false, kind: $0.kind) }
         } else {
             itemsToExport = loadLocalServers().filter { !$0.isHidden }
         }
 
-        let exportableServers = itemsToExport.map { Server(name: $0.name, address: $0.address) }
+        let exportableServers = itemsToExport.map { Server(name: $0.name, address: $0.address, kind: $0.kind) }
         let catalog = AnisetteServerData(servers: exportableServers)
 
         let encoder = Foundation.JSONEncoder()
@@ -235,26 +245,26 @@ public actor AnisetteServersManager {
             } else if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
                 for dict in json {
                     if let name = dict["name"] as? String, let address = dict["address"] as? String {
-                        parsedServers.append(Server(name: name, address: address))
+                        parsedServers.append(Server(name: name, address: address, kind: dict["kind"] as? Int))
                     }
                 }
             } else if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let list = json["servers"] as? [[String: Any]] {
                 for dict in list {
                     if let name = dict["name"] as? String, let address = dict["address"] as? String {
-                        parsedServers.append(Server(name: name, address: address))
+                        parsedServers.append(Server(name: name, address: address, kind: dict["kind"] as? Int))
                     }
                 }
             }
 
-            let rawItems = parsedServers.map { AnisetteServerItem(name: $0.name, address: $0.address, isHidden: false) }
+            let rawItems = parsedServers.map { AnisetteServerItem(name: $0.name, address: $0.address, isHidden: false, kind: $0.kind) }
             saveLocalServers(rawItems)
             return rawItems
         } else {
             inMemoryServersCache = nil
             let sourceURL = UserDefaults.standard.menuAnisetteList.isEmpty ? AnisetteServersManager.defaultSource : UserDefaults.standard.menuAnisetteList
             let remoteServers = try await fetchRemoteServers(serverSource: sourceURL)
-            let rawItems = remoteServers.map { AnisetteServerItem(name: $0.name, address: $0.address, isHidden: false) }
+            let rawItems = remoteServers.map { AnisetteServerItem(name: $0.name, address: $0.address, isHidden: false, kind: $0.kind) }
             saveLocalServers(rawItems)
             return rawItems
         }
@@ -296,14 +306,14 @@ public actor AnisetteServersManager {
         } else if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
             for dict in json {
                 if let name = dict["name"] as? String, let address = dict["address"] as? String {
-                    aniServers.append(Server(name: name, address: address))
+                    aniServers.append(Server(name: name, address: address, kind: dict["kind"] as? Int))
                 }
             }
         } else if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let list = json["servers"] as? [[String: Any]] {
             for dict in list {
                 if let name = dict["name"] as? String, let address = dict["address"] as? String {
-                    aniServers.append(Server(name: name, address: address))
+                    aniServers.append(Server(name: name, address: address, kind: dict["kind"] as? Int))
                 }
             }
         } else {
@@ -359,17 +369,76 @@ public actor AnisetteServersManager {
                 let remote = remainingRemote.remove(at: remoteIndex)
                 var updated = local
                 updated.name = remote.name
+                updated.kind = remote.kind
                 mergedItems.append(updated)
             }
         }
 
         // 2. Append newly added remote servers
         for newRemote in remainingRemote {
-            mergedItems.append(AnisetteServerItem(name: newRemote.name, address: newRemote.address, isHidden: false))
+            mergedItems.append(AnisetteServerItem(name: newRemote.name, address: newRemote.address, isHidden: false, kind: newRemote.kind))
         }
 
         saveLocalServers(mergedItems)
         return mergedItems
+    }
+
+    // MARK: - Server Client Info
+
+    public func clientInfo(for server: URL) async -> AnisetteServerClientInfo? {
+        if let cached = clientInfoCache[server.absoluteString] {
+            return cached
+        }
+
+        var request = URLRequest(url: server.appendingPathComponent("v3").appendingPathComponent("client_info"))
+        request.timeoutInterval = 10
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+
+        guard let result = try? await URLSession.shared.data(for: request),
+              let httpResponse = result.1 as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode),
+              let json = try? JSONSerialization.jsonObject(with: result.0) as? [String: Any],
+              let clientInfo = json["client_info"] as? String, !clientInfo.isEmpty,
+              let userAgent = json["user_agent"] as? String, !userAgent.isEmpty else {
+            debugLog("[AnisetteServersManager] No /v3/client_info from '\(server.absoluteString)', using configured headers")
+            return nil
+        }
+
+        let info = AnisetteServerClientInfo(clientInfo: clientInfo, userAgent: userAgent)
+        clientInfoCache[server.absoluteString] = info
+        debugLog("[AnisetteServersManager] Using client info from '\(server.absoluteString)': \(clientInfo)")
+        return info
+    }
+
+    // MARK: - Mac Anisette Migration
+
+    /// One-time move off On-Device Anisette and legacy servers, which Apple now rejects with -80046.
+    public func migrateToMacServerIfNeeded() async {
+        let defaults = UserDefaults.standard
+        guard !defaults.didMigrateToMacAnisetteServer else { return }
+
+        if !isOfflineMode {
+            do {
+                try await syncWithRemote()
+            } catch {
+                debugLog("[AnisetteServersManager] Mac anisette migration deferred, server list sync failed: \(error.localizedDescription)")
+                return
+            }
+        }
+
+        defaults.useOnDeviceAnisette = false
+        if defaults.anisetteAdiBlobSource == nil {
+            AnisetteConfigManager.shared.anisetteAdiBlob = nil
+        }
+
+        let active = loadLocalServers().filter { !$0.isHidden }
+        let current = active.first(where: { $0.address == defaults.menuAnisetteURL })
+        if current?.kind != AnisetteServerItem.macKind,
+           let mac = active.first(where: { $0.kind == AnisetteServerItem.macKind }) {
+            debugLog("[AnisetteServersManager] Switching anisette server '\(defaults.menuAnisetteURL)' -> '\(mac.address)'")
+            defaults.menuAnisetteURL = mac.address
+        }
+
+        defaults.didMigrateToMacAnisetteServer = true
     }
 
     // MARK: - Triggered Syncs

@@ -39,6 +39,7 @@ struct Server: Codable, Identifiable, Hashable {
     var id: String { address }
     var name: String
     var address: String
+    var kind: Int? = nil
 }
 final class AnisetteViewModel: ObservableObject {
     static let defaultSource = AnisetteServersManager.defaultSource

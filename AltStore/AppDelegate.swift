@@ -140,8 +140,9 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         
 
         // Trigger daily boot sync for Anisette servers if needed
-        if !UserDefaults.standard.useOnDeviceAnisette{
-            Task.detached {
+        Task.detached {
+            await AnisetteServersManager.shared.migrateToMacServerIfNeeded()
+            if !UserDefaults.standard.useOnDeviceAnisette {
                 await AnisetteServersManager.shared.performDailySyncIfNeeded()
             }
         }
