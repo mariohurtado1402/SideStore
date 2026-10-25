@@ -30,7 +30,7 @@ public final class AppBootManager {
     private init() {}
     
 
-    public nonisolated func startMinimuxer(pairingFile: String) async throws {
+    public nonisolated func startMinimuxer(pairingFile: String, preferred explicitProtocol: PairingProtocol? = nil) async throws {
         debugLog("[AppBootManager] startMinimuxer() entered")
         defer { debugLog("[AppBootManager] startMinimuxer() exited") }
         
@@ -39,7 +39,12 @@ public final class AppBootManager {
             try await startEMProxy()
         }
 
-        let preferred = PairingFileManager.shared.preferredProtocol
+        // Files from iloader carry both RemotePairing and Lockdown credentials, which minimuxer
+        // rejects as ambiguous unless told which protocol the loaded file is meant for.
+        let preferred = explicitProtocol
+            ?? PairingFileManager.shared.fetchedPairingProtocol()
+            ?? .rppairing
+        debugLog("[AppBootManager] startMinimuxer(): using \(preferred.rawValue) protocol")
         try await minimuxerStart(pairingFile, preferred: preferred)
         
         // Validate the pairing by trying to fetch the UDID

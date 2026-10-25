@@ -491,7 +491,7 @@ func minimuxerSwitchPairingProtocol(to proto: PairingProtocol) async throws {
             throw MinimuxerError.pairingNotLoaded("Missing pairing file for \(proto.rawValue)")
         }
         try await minimuxerStop()
-        try await AppBootManager.shared.startMinimuxer(pairingFile: pf)
+        try await AppBootManager.shared.startMinimuxer(pairingFile: pf, preferred: proto)
     }
     #endif
 }

@@ -97,6 +97,13 @@ final class PairingFileManager: NSObject {
         return nil
     }
     
+    nonisolated func fetchedPairingProtocol() -> PairingProtocol? {
+        if let preferred = preferredProtocol, hasPairingFile(for: preferred) {
+            return preferred
+        }
+        return persistedActiveProtocol
+    }
+
     @discardableResult
     nonisolated func parse(content: String, preferred: PairingProtocol? = nil) throws -> any PairingFile {
         try PairingFileParser.parse(content: content, preferred: preferred)
