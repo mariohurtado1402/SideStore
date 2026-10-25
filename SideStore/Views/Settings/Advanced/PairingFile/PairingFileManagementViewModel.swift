@@ -83,6 +83,7 @@ public final class PairingFileManagementViewModel: ObservableObject {
                     try PairingFileManager.shared.importPairingFile(from: url, preferred: targetImportMode)
                     targetImportMode = nil
                     refresh()
+                    activateIfNothingLoaded()
                 } catch {
                     activeAlert = .importError("Failed to import pairing file: \(error.localizedDescription)")
                 }
@@ -99,6 +100,7 @@ public final class PairingFileManagementViewModel: ObservableObject {
                 try PairingFileManager.shared.importPairingFile(from: url, preferred: parsed.mode)
                 targetImportMode = nil
                 refresh()
+                activateIfNothingLoaded()
             } catch {
                 activeAlert = .importError("Failed to import pairing file: \(error.localizedDescription)")
             }
@@ -113,6 +115,7 @@ public final class PairingFileManagementViewModel: ObservableObject {
             try PairingFileManager.shared.importPairingFile(from: url, preferred: newProtocol)
             targetImportMode = nil
             refresh()
+            activateIfNothingLoaded()
         } catch {
             activeAlert = .importError("Failed to import pairing file: \(error.localizedDescription)")
         }
@@ -123,6 +126,7 @@ public final class PairingFileManagementViewModel: ObservableObject {
             try PairingFileManager.shared.importPairingFile(from: url, preferred: mode)
             targetImportMode = nil
             refresh()
+            activateIfNothingLoaded()
         } catch {
             activeAlert = .importError("Failed to import pairing file: \(error.localizedDescription)")
         }
@@ -185,6 +189,12 @@ public final class PairingFileManagementViewModel: ObservableObject {
             activeAlert = .importError("Failed to activate \(proto.rawValue): \(error.localizedDescription)")
             refresh()
         }
+    }
+
+    private func activateIfNothingLoaded() {
+        guard PairingFileManager.shared.activeProtocol == .unknown,
+              let mode = PairingFileManager.shared.persistedActiveProtocol else { return }
+        Task { await activate(proto: mode) }
     }
 
     public func setPreferred(proto: PairingProtocol) {

@@ -137,6 +137,39 @@ final class PairingFileManager: NSObject {
         persistedActiveProtocol = parsed.mode
     }
 
+    /// Picks up pairing files placed into Documents by external tools (e.g. iloader's "Place pairing file"),
+    /// which never go through the in-app import that clears the reset flag and records the protocol.
+    @discardableResult
+    nonisolated func adoptExternallyPlacedPairingFiles() -> Bool {
+        if fetchPairingFile() != nil {
+            return false
+        }
+
+        let fm = FileManager.default
+        let legacyURL = fm.documentsDirectory.appendingPathComponent(AppConstants.Pairing.legacyPairingFileName)
+        if fm.fileExists(atPath: legacyURL.path),
+           let content = try? String(contentsOf: legacyURL), !content.isEmpty {
+            for mode in [PairingProtocol.rppairing, .lockdown] where !hasPairingFile(for: mode) {
+                if let parsed = try? parse(content: content, preferred: mode), parsed.mode == mode {
+                    try? content.write(to: pairingFileURL(for: mode), atomically: true, encoding: .utf8)
+                }
+            }
+        }
+
+        let candidates = [preferredProtocol, persistedActiveProtocol, .rppairing, .lockdown].compactMap { $0 }
+        guard let mode = candidates.first(where: { mode in
+            guard let content = fetchPairingFile(for: mode) else { return false }
+            return (try? parse(content: content, preferred: mode)) != nil
+        }) else {
+            return false
+        }
+
+        UserDefaults.standard.isPairingReset = false
+        persistedActiveProtocol = mode
+        debugLog("[PairingFile] Adopted externally placed \(mode.rawValue) pairing file.")
+        return true
+    }
+
     func deletePairingFile(for mode: PairingProtocol) {
         let fileURL = pairingFileURL(for: mode)
         let fm = FileManager.default

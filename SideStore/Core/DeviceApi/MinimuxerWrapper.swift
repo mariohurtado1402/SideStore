@@ -210,6 +210,14 @@ public func ensureMinimuxerReady() async throws {
             reason: "WireGuard VPN is not supported with Cellular Refresh because iOS pauses the WireGuard tunnel when cellular data is toggled off."
         )
     }
+    if minimuxerPairingProtocol() == .unknown {
+        PairingFileManager.shared.adoptExternallyPlacedPairingFiles()
+        if let pf = PairingFileManager.shared.fetchPairingFile() {
+            debugLog("[SideStore] ensureMinimuxerReady(): pairing file on disk but not loaded, starting minimuxer")
+            try? await minimuxerStop()
+            try await AppBootManager.shared.startMinimuxer(pairingFile: pf)
+        }
+    }
     if !CellularRefreshManager.shared.isEnabled {
         try await withRemotePairingRetry {
             if case .failure(let error) = await isMinimuxerReady() {
