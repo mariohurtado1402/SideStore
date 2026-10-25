@@ -9,6 +9,7 @@
 import Foundation
 import UIKit
 import Minimuxer
+import MinimuxerCommon
 
 public final class AppBootManager {
     public static let shared = AppBootManager()
