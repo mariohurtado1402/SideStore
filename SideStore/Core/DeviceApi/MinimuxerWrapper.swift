@@ -281,14 +281,78 @@ func minimuxerStop() async throws {
     #endif
 }
 
+// MARK: - misagent install fallback
+
+// `idevice`'s misagent client only accepts an *unsigned* `Status` in the Install response, so when the
+// device answers with a negative MIS/AMD error code the real failure is discarded and we surface the
+// opaque "install Status is not an unsigned integer" instead. The libimobiledevice gateway reads the
+// same field as a signed Int (and its RSD path sends a slightly different Install request), so retrying
+// there either completes the install or reports the actual status code.
+// Needs proper testing across iOS versions.
+private let misagentUnsignedStatusMarker = "is not an unsigned integer"
+
+private func isMisagentUnsignedStatusError(_ error: Error) -> Bool {
+    guard let minErr = error as? MinimuxerError else { return false }
+    if case .profileInstall(let reason) = minErr {
+        return reason.contains(misagentUnsignedStatusMarker)
+    }
+    return false
+}
+
+/// Swaps the live gateway backend and reloads the pairing file into it.
+/// Deliberately does not touch `UserDefaults.minimuxerGatewayBackend`, so the backend the user picked
+/// in Settings is restored on the next launch.
+private func restartMinimuxer(on backend: GatewayBackend) async throws {
+    guard let pf = PairingFileManager.shared.fetchPairingFile() else {
+        throw MinimuxerError.pairingNotLoaded("Missing pairing file while switching to \(backend.rawValue)")
+    }
+    let proto = PairingFileManager.shared.fetchedPairingProtocol()
+    // Stop on the current gateway before swapping it out, otherwise the old one is left running.
+    try? await minimuxerStop()
+    selectedGatewayBackendCache = backend
+    minimuxer.set(MinimuxerParams(backend: backend))
+    try await AppBootManager.shared.startMinimuxer(pairingFile: pf, preferred: proto)
+}
+
+private func withMisagentBackendFallback<T>(_ operation: () async throws -> T) async throws -> T {
+    do {
+        return try await operation()
+    } catch {
+        let originalBackend = selectedGatewayBackendCache
+        guard isMisagentUnsignedStatusError(error),
+              originalBackend == .idevice,
+              // Restarting minimuxer mid cellular refresh would tear down the tunnel while data is off.
+              !CellularRefreshManager.shared.isEnabled,
+              PairingFileManager.shared.fetchPairingFile() != nil
+        else {
+            throw error
+        }
+
+        debugLog("[SideStore] misagent install returned an unparsable status (\(error)); retrying on the libimobiledevice backend")
+        try await restartMinimuxer(on: .libimobiledevice)
+        do {
+            let result = try await operation()
+            debugLog("[SideStore] libimobiledevice misagent retry succeeded")
+            try? await restartMinimuxer(on: originalBackend)
+            return result
+        } catch let retryError {
+            debugLog("[SideStore] libimobiledevice misagent retry also failed: \(retryError)")
+            try? await restartMinimuxer(on: originalBackend)
+            throw retryError
+        }
+    }
+}
+
 func installProvisioningProfiles(_ profileData: Data) async throws {
     defer { debugLog("[SideStore] installProvisioningProfiles(profileData) completed") }
     #if targetEnvironment(simulator)
     debugLog("[SideStore] installProvisioningProfiles(profileData) is no-op on simulator")
     #else
     debugLog("[SideStore] installProvisioningProfiles(profileData) invoked")
-    try await withRemotePairingRetry {
-        try await minimuxer.core.installProvisioningProfile(profile: profileData)
+    try await withMisagentBackendFallback {
+        try await withRemotePairingRetry {
+            try await minimuxer.core.installProvisioningProfile(profile: profileData)
+        }
     }
     #endif
 }
