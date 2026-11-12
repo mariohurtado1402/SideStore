@@ -9,6 +9,7 @@ import Foundation
 import Network
 import Minimuxer
 import MinimuxerCommon
+import SideSign
 import Combine
 
 public var selectedGatewayBackendCache: GatewayBackend = .idevice
@@ -281,13 +282,14 @@ func minimuxerStop() async throws {
     #endif
 }
 
-// MARK: - misagent install fallback
+// MARK: - misagent install recovery
 
-// `idevice`'s misagent client only accepts an *unsigned* `Status` in the Install response, so when the
+// `idevice` misagent client only accepts an *unsigned* `Status` in the Install response, so when the
 // device answers with a negative MIS/AMD error code the real failure is discarded and we surface the
-// opaque "install Status is not an unsigned integer" instead. The libimobiledevice gateway reads the
-// same field as a signed Int (and its RSD path sends a slightly different Install request), so retrying
-// there either completes the install or reports the actual status code.
+// opaque "install Status is not an unsigned integer" instead. Recovery runs only on that error and
+// walks three steps: dump what the profile actually contains, drop any existing copy and retry on the
+// same backend, then retry on libimobiledevice, which parses a signed Status and sends a slightly
+// different Install request.
 // Needs proper testing across iOS versions.
 private let misagentUnsignedStatusMarker = "is not an unsigned integer"
 
@@ -297,6 +299,52 @@ private func isMisagentUnsignedStatusError(_ error: Error) -> Bool {
         return reason.contains(misagentUnsignedStatusMarker)
     }
     return false
+}
+
+/// Logs what the rejected profile actually targets. Never logs the UDID itself nor the profile's
+/// device list, only counts and a match flag, so the log stays safe to share.
+private func logRejectedProfileDiagnostics(_ profileData: Data) async {
+    guard let profile = try? ProvisioningProfile(data: profileData) else {
+        debugLog("[SideStore] misagent diagnostics: could not parse the rejected profile (\(profileData.count) bytes)")
+        return
+    }
+    var targets = "unknown (UDID unavailable)"
+    if let udid = try? await fetchUDID() {
+        // UDID casing differs between lockdown and the portal, so compare case-insensitively.
+        targets = profile.deviceIDs.contains { $0.caseInsensitiveCompare(udid) == .orderedSame } ? "yes" : "NO"
+    }
+    debugLog("""
+    [SideStore] misagent diagnostics for the rejected profile:
+      name: \(profile.name)
+      uuid: \(profile.uuid.uuidString)
+      bundle: \(profile.bundleIdentifier)
+      team: \(profile.teamIdentifier)
+      free account profile: \(profile.isFreeProvisioningProfile)
+      expires: \(profile.expirationDate)
+      devices listed: \(profile.deviceIDs.count)
+      targets this device: \(targets)
+    """)
+}
+
+/// misagent can refuse to overwrite a profile that is already present. Dropping it first is cheap and
+/// needs no minimuxer restart, so it is worth trying before the heavier backend swap.
+private func retryInstallAfterRemovingProfile(_ profileData: Data) async -> Bool {
+    guard let profile = try? ProvisioningProfile(data: profileData) else { return false }
+    let uuid = profile.uuid.uuidString
+    do {
+        debugLog("[SideStore] removing existing profile \(uuid) before retrying the install")
+        try await removeProvisioningProfile(uuid)
+    } catch {
+        debugLog("[SideStore] removing profile \(uuid) failed: \(error) - retrying the install anyway")
+    }
+    do {
+        try await minimuxer.core.installProvisioningProfile(profile: profileData)
+        debugLog("[SideStore] install succeeded after removing the existing profile")
+        return true
+    } catch {
+        debugLog("[SideStore] install still rejected after the remove: \(error)")
+        return false
+    }
 }
 
 /// Swaps the live gateway backend and reloads the pairing file into it.
@@ -314,32 +362,56 @@ private func restartMinimuxer(on backend: GatewayBackend) async throws {
     try await AppBootManager.shared.startMinimuxer(pairingFile: pf, preferred: proto)
 }
 
-private func withMisagentBackendFallback<T>(_ operation: () async throws -> T) async throws -> T {
-    do {
-        return try await operation()
-    } catch {
-        let originalBackend = selectedGatewayBackendCache
-        guard isMisagentUnsignedStatusError(error),
-              originalBackend == .idevice,
-              // Restarting minimuxer mid cellular refresh would tear down the tunnel while data is off.
-              !CellularRefreshManager.shared.isEnabled,
-              PairingFileManager.shared.fetchPairingFile() != nil
-        else {
-            throw error
-        }
+/// A freshly restarted backend needs a moment before its services answer; boot logs show the RP
+/// connection coming up only after the first probes fail.
+private func waitForMinimuxerReady(timeout: TimeInterval = 10) async -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if await isMinimuxerReady().isSuccess { return true }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+    }
+    return false
+}
 
-        debugLog("[SideStore] misagent install returned an unparsable status (\(error)); retrying on the libimobiledevice backend")
+private func recoverFromRejectedProfileInstall(_ profileData: Data, originalError: Error) async throws {
+    await logRejectedProfileDiagnostics(profileData)
+
+    if await retryInstallAfterRemovingProfile(profileData) { return }
+
+    let originalBackend = selectedGatewayBackendCache
+    guard originalBackend == .idevice,
+          // Restarting minimuxer mid cellular refresh would tear down the tunnel while data is off.
+          !CellularRefreshManager.shared.isEnabled,
+          PairingFileManager.shared.fetchPairingFile() != nil
+    else {
+        throw originalError
+    }
+
+    debugLog("[SideStore] retrying the profile install on the libimobiledevice backend")
+    do {
         try await restartMinimuxer(on: .libimobiledevice)
-        do {
-            let result = try await operation()
-            debugLog("[SideStore] libimobiledevice misagent retry succeeded")
-            try? await restartMinimuxer(on: originalBackend)
-            return result
-        } catch let retryError {
-            debugLog("[SideStore] libimobiledevice misagent retry also failed: \(retryError)")
-            try? await restartMinimuxer(on: originalBackend)
-            throw retryError
-        }
+    } catch {
+        debugLog("[SideStore] could not bring up the libimobiledevice backend: \(error)")
+        try? await restartMinimuxer(on: originalBackend)
+        throw originalError
+    }
+
+    guard await waitForMinimuxerReady() else {
+        debugLog("[SideStore] libimobiledevice backend never became ready; keeping the original error")
+        try? await restartMinimuxer(on: originalBackend)
+        throw originalError
+    }
+
+    do {
+        try await minimuxer.core.installProvisioningProfile(profile: profileData)
+        debugLog("[SideStore] profile installed through the libimobiledevice backend")
+        try? await restartMinimuxer(on: originalBackend)
+    } catch {
+        try? await restartMinimuxer(on: originalBackend)
+        // Keep both messages: the retry carries the device's real status code when it got that far.
+        let combined = "\(String(describing: originalError)) | libimobiledevice retry: \(String(describing: error))"
+        debugLog("[SideStore] profile install failed on both backends: \(combined)")
+        throw MinimuxerError.profileInstall(combined)
     }
 }
 
@@ -349,10 +421,13 @@ func installProvisioningProfiles(_ profileData: Data) async throws {
     debugLog("[SideStore] installProvisioningProfiles(profileData) is no-op on simulator")
     #else
     debugLog("[SideStore] installProvisioningProfiles(profileData) invoked")
-    try await withMisagentBackendFallback {
+    do {
         try await withRemotePairingRetry {
             try await minimuxer.core.installProvisioningProfile(profile: profileData)
         }
+    } catch {
+        guard isMisagentUnsignedStatusError(error) else { throw error }
+        try await recoverFromRejectedProfileInstall(profileData, originalError: error)
     }
     #endif
 }
